@@ -3,7 +3,12 @@
 import { useState, useRef, useEffect } from "react";
 import { X, Mic } from "lucide-react";
 
-import { callGeminiAPI } from "./functions";
+import {
+  callGeminiAPI,
+  filterNonNullFields,
+  updateObjectSkippingNulls,
+} from "./functions";
+import { getGeminiChatSession } from "@/actions/client_actions/initializeGemini";
 
 interface BookingModalProps {
   onClose: () => void;
@@ -49,11 +54,12 @@ export default function BookingModal({ onClose }: BookingModalProps) {
     departure_time: null,
     confirmed: false,
   });
-  const [chatId, setChatId] = useState<string | null>(null);
   const [trigger, setTrigger] = useState(false);
   const [isCompleted, setIsCompleted] = useState(false);
   const isSpeakingActiveRef = useRef(false);
   const [isSpeakingActiveUI, setIsSpeakingActiveUI] = useState(false);
+
+  const chat = getGeminiChatSession();
 
   const setIsSpeakingActive = (active: boolean) => {
     isSpeakingActiveRef.current = active;
@@ -150,11 +156,13 @@ export default function BookingModal({ onClose }: BookingModalProps) {
     setMessage("Preparing greeting...");
 
     try {
-      const response = await callGeminiAPI(null, bookingDetails, chatId);
+      const response = await callGeminiAPI(
+        null,
+        bookingDetails,
+        chat.current,
+        true
+      );
 
-      if (response.chatId) {
-        setChatId(response.chatId);
-      }
       console.log("Intro response from Gemini:", response);
 
       if (response.narration) {
@@ -233,12 +241,17 @@ export default function BookingModal({ onClose }: BookingModalProps) {
             const response = await callGeminiAPI(
               base64Audio,
               bookingDetails,
-              chatId
+              chat.current,
+              false
             );
             console.log("Response from Gemini:", response);
 
             setBookingDetails((prev) => {
-              const updatedDetails = response.updatedBookingDetails;
+              const updatedDetails = updateObjectSkippingNulls(
+                bookingDetails,
+                response.updatedBookingDetails
+              ) as BookingDetails;
+
               console.log(
                 "Updated bookingDetails:",
                 JSON.stringify(updatedDetails)

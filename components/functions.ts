@@ -1,3 +1,6 @@
+import { sendRequestToGeminiClient } from "@/actions/client_actions/sendRequestToGeminiClientSide";
+import { ChatSession } from "@google/generative-ai";
+
 // Define the BookingDetails interface
 export interface BookingDetails {
   starting_point: string | null;
@@ -15,7 +18,6 @@ interface AssistantResponse {
   narration: string;
   updatedBookingDetails: BookingDetails;
   bookingComplete: boolean;
-  chatId: string | null;
   bookingSuccessful?: boolean;
   booking_id?: string;
   confirmation_code?: string;
@@ -37,43 +39,42 @@ const defaultResponse: AssistantResponse = {
     confirmed: false,
   },
   bookingComplete: false,
-  chatId: null,
 };
 
 // Function to call the backend API
 export const callGeminiAPI = async (
   audioBase64: string | null,
   bookingDetails: BookingDetails,
-  chatId: string | null = null
+  chat: ChatSession,
+  isFirstInteraction: boolean = false
 ): Promise<AssistantResponse> => {
   try {
-    console.log(
-      "sending request to gemini url is ",
-      process.env.NEXT_PUBLIC_BACKEND_URL
+    return await sendRequestToGeminiClient(
+      audioBase64,
+      bookingDetails,
+      chat,
+      isFirstInteraction
     );
-    // const response = await fetch("http://localhost:5000/api/gemini", {
-    const response = await fetch(
-      `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/gemini`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          audioBase64,
-          bookingDetails,
-          chatId,
-        }),
-      }
-    );
-
-    if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
-    }
-
-    return await response.json();
   } catch (error) {
     console.error("Error calling Gemini API:", error);
     return defaultResponse;
   }
+};
+
+export const updateObjectSkippingNulls = (
+  original: Object,
+  updates: Object
+) => {
+  return {
+    ...original,
+    ...Object.fromEntries(
+      Object.entries(updates).filter(([_, value]) => value !== null)
+    ),
+  };
+};
+
+export const filterNonNullFields = (obj: Object) => {
+  return Object.fromEntries(
+    Object.entries(obj).filter(([_, value]) => value !== null)
+  );
 };
