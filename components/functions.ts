@@ -47,17 +47,25 @@ export const callGeminiAPI = async (
   chatId: string | null = null
 ): Promise<AssistantResponse> => {
   try {
-    const response = await fetch("http://localhost:5000/api/gemini", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        audioBase64,
-        bookingDetails,
-        chatId,
-      }),
-    });
+    console.log(
+      "sending request to gemini url is ",
+      process.env.NEXT_PUBLIC_BACKEND_URL
+    );
+    // const response = await fetch("http://localhost:5000/api/gemini", {
+    const response = await fetch(
+      `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/gemini`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          audioBase64,
+          bookingDetails,
+          chatId,
+        }),
+      }
+    );
 
     if (!response.ok) {
       throw new Error(`API error: ${response.status}`);
