@@ -2,23 +2,10 @@
 
 import { useState, useRef, useEffect } from "react";
 import { X, Mic } from "lucide-react";
-
-import { callGeminiAPI } from "./functions";
+import { sendRequestToGemini } from "@/actions/sendRequestToGemini";
 
 interface BookingModalProps {
   onClose: () => void;
-}
-
-// Define the BookingDetails interface
-export interface BookingDetails {
-  starting_point: string | null;
-  destination: string | null;
-  date: string | null;
-  seat_number: string | null;
-  customer_name: string | null;
-  phone_number: string | null;
-  departure_time: string | null;
-  confirmed: boolean;
 }
 
 type RecordingState =
@@ -28,38 +15,29 @@ type RecordingState =
   | "speaking"
   | "intro";
 
+interface BookingDetails {
+  seat_number?: string;
+  customer_name?: string;
+  phone_number?: string;
+  starting_point?: string;
+  destination?: string;
+  date?: string;
+  bus_id?: string;
+  departure_time?: string;
+}
+
 export default function BookingModal({ onClose }: BookingModalProps) {
-  const recordingStateRef = useRef<RecordingState>("intro");
-  const [recordingStateUI, setRecordingStateUI] =
-    useState<RecordingState>("intro");
-
-  const setRecordingState = (state: RecordingState) => {
-    recordingStateRef.current = state;
-    setRecordingStateUI(state);
-  };
-
+  const [recordingState, setRecordingState] = useState<RecordingState>("intro");
   const [message, setMessage] = useState<string>("Starting...");
-  const [bookingDetails, setBookingDetails] = useState<BookingDetails>({
-    starting_point: null,
-    destination: null,
-    date: null,
-    seat_number: null,
-    customer_name: null,
-    phone_number: null,
-    departure_time: null,
-    confirmed: false,
-  });
-  const [chatId, setChatId] = useState<string | null>(null);
+  const [bookingDetails, setBookingDetails] = useState<BookingDetails>({});
+  const [lastGeminiResponse, setLastGeminiResponse] = useState<{
+    narration: string;
+    updates: BookingDetails;
+    complete: boolean;
+  } | null>(null);
   const [trigger, setTrigger] = useState(false);
   const [isCompleted, setIsCompleted] = useState(false);
-  const isSpeakingActiveRef = useRef(false);
-  const [isSpeakingActiveUI, setIsSpeakingActiveUI] = useState(false);
-
-  const setIsSpeakingActive = (active: boolean) => {
-    isSpeakingActiveRef.current = active;
-    setIsSpeakingActiveUI(active);
-  };
-
+  const [isSpeakingActive, setIsSpeakingActive] = useState(false);
   const [volumeLevel, setVolumeLevel] = useState(0);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -69,21 +47,8 @@ export default function BookingModal({ onClose }: BookingModalProps) {
   const animationFrameRef = useRef<number | null>(null);
   const isClosingRef = useRef(false);
   const hasGreetedRef = useRef(false);
-  const autoInterruptEnabledRef = useRef(true);
-  const [autoInterruptEnabledUI, setAutoInterruptEnabledUI] = useState(true);
-
-  const setAutoInterruptEnabled = (
-    value: boolean | ((prev: boolean) => boolean)
-  ) => {
-    if (typeof value === "function") {
-      const newValue = value(autoInterruptEnabledRef.current);
-      autoInterruptEnabledRef.current = newValue;
-      setAutoInterruptEnabledUI(newValue);
-    } else {
-      autoInterruptEnabledRef.current = value;
-      setAutoInterruptEnabledUI(value);
-    }
-  };
+  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null); // Track current utterance
+  const speakingTimeoutRef = useRef<NodeJS.Timeout | null>(null); // Timeout for stuck speech
 
   const handleBookingComplete = (details: BookingDetails) => {
     console.log("Booking Complete! Final Details:", JSON.stringify(details));
@@ -114,34 +79,16 @@ export default function BookingModal({ onClose }: BookingModalProps) {
       clearTimeout(silenceTimeoutRef.current);
       silenceTimeoutRef.current = null;
     }
+    if (speakingTimeoutRef.current) {
+      console.log("Clearing speaking timeout...");
+      clearTimeout(speakingTimeoutRef.current);
+      speakingTimeoutRef.current = null;
+    }
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
       animationFrameRef.current = null;
     }
     onClose();
-  };
-
-  const onSpeakingStop = () => {
-    setIsSpeakingActive(false);
-    setRecordingState("idle");
-    setMessage("Listening...");
-    setTrigger((prev) => !prev);
-  };
-
-  const startSpeaking = (narration: string) => {
-    const utterance = new SpeechSynthesisUtterance(narration);
-    utterance.lang = "en-GB";
-    utterance.onstart = () => {
-      console.log("Speech started...");
-      setIsSpeakingActive(true);
-      setupSpeechInterruption();
-    };
-    utterance.onend = () => {
-      console.log("Gemini finished speaking, triggering restart...");
-      onSpeakingStop();
-    };
-    speechSynthesis.speak(utterance);
-    return utterance;
   };
 
   const fetchIntroMessage = async () => {
@@ -150,17 +97,43 @@ export default function BookingModal({ onClose }: BookingModalProps) {
     setMessage("Preparing greeting...");
 
     try {
-      const response = await callGeminiAPI(null, bookingDetails, chatId);
-
-      if (response.chatId) {
-        setChatId(response.chatId);
-      }
+      const response = await sendRequestToGemini(
+        null,
+        bookingDetails,
+        "Provide a friendly introductory greeting for a voice-based booking assistant and ask for the starting point to start the booking process.",
+        lastGeminiResponse
+      );
       console.log("Intro response from Gemini:", response);
+      setLastGeminiResponse(response);
 
       if (response.narration) {
         setRecordingState("speaking");
         setMessage("Agent Speaking ...");
-        startSpeaking(response.narration);
+        const utterance = new SpeechSynthesisUtterance(response.narration);
+        utterance.lang = "en-GB";
+        utteranceRef.current = utterance; // Store utterance
+
+        utterance.onstart = () => {
+          console.log("Intro speech started...");
+          setIsSpeakingActive(true);
+          // Set timeout based on narration length (approx 150 words per minute)
+          const narrationLength = response.narration.split(" ").length;
+          const estimatedTime = (narrationLength / 150) * 60 * 1000 + 2000; // Add 2s buffer
+          speakingTimeoutRef.current = setTimeout(() => {
+            console.log("Speech timeout triggered, forcing end...");
+            speechSynthesis.cancel();
+            handleSpeechEnd();
+          }, estimatedTime);
+        };
+        utterance.onend = () => {
+          console.log("Intro speech finished naturally...");
+          handleSpeechEnd();
+        };
+        utterance.onerror = (event) => {
+          console.error("Speech error:", event.error);
+          handleSpeechEnd();
+        };
+        speechSynthesis.speak(utterance);
       } else {
         setRecordingState("idle");
         setMessage("Listening...");
@@ -172,6 +145,19 @@ export default function BookingModal({ onClose }: BookingModalProps) {
       setMessage("Error starting assistant. Please try again.");
       setTrigger((prev) => !prev);
     }
+  };
+
+  const handleSpeechEnd = () => {
+    setIsSpeakingActive(false);
+    if (speakingTimeoutRef.current) {
+      clearTimeout(speakingTimeoutRef.current);
+      speakingTimeoutRef.current = null;
+    }
+    utteranceRef.current = null;
+    console.log("Speech ended, transitioning to idle...");
+    setRecordingState("idle");
+    setMessage("Listening...");
+    setTrigger((prev) => !prev);
   };
 
   const startRecording = async () => {
@@ -230,31 +216,60 @@ export default function BookingModal({ onClose }: BookingModalProps) {
 
           try {
             const base64Audio = reader.result as string;
-            const response = await callGeminiAPI(
+            const response = await sendRequestToGemini(
               base64Audio,
               bookingDetails,
-              chatId
+              undefined,
+              lastGeminiResponse
             );
             console.log("Response from Gemini:", response);
+            setLastGeminiResponse(response);
 
-            setBookingDetails((prev) => {
-              const updatedDetails = response.updatedBookingDetails;
-              console.log(
-                "Updated bookingDetails:",
-                JSON.stringify(updatedDetails)
-              );
-              return updatedDetails;
-            });
+            if (response.updates) {
+              setBookingDetails((prev) => {
+                const updatedDetails = { ...prev, ...response.updates };
+                console.log(
+                  "Updated bookingDetails:",
+                  JSON.stringify(updatedDetails)
+                );
+                return updatedDetails;
+              });
+            }
 
-            if (response.bookingComplete) {
-              handleBookingComplete(response.updatedBookingDetails);
+            if (response.complete) {
+              handleBookingComplete({ ...bookingDetails, ...response.updates });
             }
 
             if (response.narration) {
               setRecordingState("speaking");
               setMessage("Agent Speaking ...");
+              const utterance = new SpeechSynthesisUtterance(
+                response.narration
+              );
+              utterance.lang = "en-GB";
+              utteranceRef.current = utterance;
 
-              startSpeaking(response.narration);
+              utterance.onstart = () => {
+                console.log("Speech started...");
+                setIsSpeakingActive(true);
+                const narrationLength = response.narration.split(" ").length;
+                const estimatedTime =
+                  (narrationLength / 150) * 60 * 1000 + 2000;
+                speakingTimeoutRef.current = setTimeout(() => {
+                  console.log("Speech timeout triggered, forcing end...");
+                  speechSynthesis.cancel();
+                  handleSpeechEnd();
+                }, estimatedTime);
+              };
+              utterance.onend = () => {
+                console.log("Speech finished naturally...");
+                handleSpeechEnd();
+              };
+              utterance.onerror = (event) => {
+                console.error("Speech error:", event.error);
+                handleSpeechEnd();
+              };
+              speechSynthesis.speak(utterance);
             }
           } catch (error) {
             console.error("Error processing audio:", error);
@@ -280,7 +295,6 @@ export default function BookingModal({ onClose }: BookingModalProps) {
 
       const bufferLength = analyserRef.current.frequencyBinCount;
       const dataArray = new Uint8Array(bufferLength);
-
       const updateVolume = () => {
         if (
           !analyserRef.current ||
@@ -316,13 +330,13 @@ export default function BookingModal({ onClose }: BookingModalProps) {
             silenceTimeoutRef.current = setTimeout(() => {
               if (
                 mediaRecorderRef.current &&
-                mediaRecorderRef.current.state === "recording"
+                mediaRecorderRef.current.state !== "inactive"
               ) {
                 console.log("Silence detected, stopping recording...");
                 mediaRecorderRef.current.stop();
                 silenceTimeoutRef.current = null;
               }
-            }, 1000); // 1-second silence threshold
+            }, 1000);
           }
         } else {
           if (silenceTimeoutRef.current) {
@@ -346,7 +360,7 @@ export default function BookingModal({ onClose }: BookingModalProps) {
     if (!hasGreetedRef.current) {
       fetchIntroMessage();
       hasGreetedRef.current = true;
-    } else if (recordingStateRef.current === "idle" && !isCompleted) {
+    } else if (recordingState === "idle" && !isCompleted) {
       startRecording();
     }
     return () => {
@@ -354,11 +368,17 @@ export default function BookingModal({ onClose }: BookingModalProps) {
         cancelAnimationFrame(animationFrameRef.current);
         animationFrameRef.current = null;
       }
+      if (speakingTimeoutRef.current) {
+        clearTimeout(speakingTimeoutRef.current);
+        speakingTimeoutRef.current = null;
+      }
+      if (speechSynthesis.speaking || speechSynthesis.pending) {
+        speechSynthesis.cancel();
+      }
     };
   }, [trigger, isCompleted]);
 
   const stopRecordingManually = () => {
-    console.log("stopRecordingManually called");
     if (
       mediaRecorderRef.current &&
       mediaRecorderRef.current.state === "recording"
@@ -369,75 +389,7 @@ export default function BookingModal({ onClose }: BookingModalProps) {
         clearTimeout(silenceTimeoutRef.current);
         silenceTimeoutRef.current = null;
       }
-      setRecordingState("processing");
-      setMessage("Processing your request...");
     }
-  };
-
-  const stopSpeakingManually = () => {
-    console.log("stopSpeakingManually called");
-    if (speechSynthesis.speaking || speechSynthesis.pending) {
-      console.log("Manual stop speaking triggered...");
-      speechSynthesis.cancel();
-      onSpeakingStop();
-    }
-  };
-
-  // Add this function to your component
-  const setupSpeechInterruption = () => {
-    // Only setup if we're in speaking mode
-    if (recordingStateRef.current !== "speaking") return;
-
-    console.log("Setting up speech interruption detection");
-
-    // Create audio context for monitoring
-    const audioContext = new AudioContext();
-    let analyzer: AnalyserNode;
-
-    navigator.mediaDevices
-      .getUserMedia({ audio: true })
-      .then((stream) => {
-        const source = audioContext.createMediaStreamSource(stream);
-        analyzer = audioContext.createAnalyser();
-        analyzer.fftSize = 2048;
-        source.connect(analyzer);
-
-        const bufferLength = analyzer.frequencyBinCount;
-        const dataArray = new Uint8Array(bufferLength);
-
-        const checkForSpeech = () => {
-          if (
-            recordingStateRef.current !== "speaking" ||
-            !isSpeakingActiveRef.current
-          ) {
-            stream.getTracks().forEach((track) => track.stop());
-            audioContext.close();
-            console.log("resetting speech interruption setup");
-            return;
-          }
-
-          analyzer.getByteFrequencyData(dataArray);
-          const average =
-            dataArray.reduce((sum, val) => sum + val, 0) / bufferLength;
-          const speechThreshold = 50; // Higher than silence threshold to avoid false triggers
-
-          // Only interrupt if feature is enabled
-          if (average > speechThreshold && autoInterruptEnabledRef.current) {
-            console.log("User speech detected, stopping assistant speech");
-            stopSpeakingManually();
-            stream.getTracks().forEach((track) => track.stop());
-            audioContext.close();
-            return;
-          }
-
-          requestAnimationFrame(checkForSpeech);
-        };
-
-        requestAnimationFrame(checkForSpeech);
-      })
-      .catch((err) => {
-        console.error("Error setting up speech interruption:", err);
-      });
   };
 
   return (
@@ -452,27 +404,6 @@ export default function BookingModal({ onClose }: BookingModalProps) {
           <h2 className="text-xl font-bold text-[#1F2937]">
             {isCompleted ? "Booking Confirmation" : "Booking Assistant"}
           </h2>
-
-          {!isCompleted && (
-            <div className="flex items-center">
-              <span className="text-xs mr-2 text-gray-600">Auto-Interrupt</span>
-              <button
-                onClick={() => setAutoInterruptEnabled((prev) => !prev)}
-                className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 ${
-                  autoInterruptEnabledUI ? "bg-blue-600" : "bg-gray-200"
-                }`}
-                role="switch"
-                aria-checked={autoInterruptEnabledUI}
-              >
-                <span
-                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                    autoInterruptEnabledUI ? "translate-x-5" : "translate-x-1"
-                  }`}
-                />
-              </button>
-            </div>
-          )}
-
           <button
             onClick={handleClose}
             className="text-[#1F2937] hover:text-[#1E90FF] transition-colors"
@@ -512,62 +443,49 @@ export default function BookingModal({ onClose }: BookingModalProps) {
           <div className="flex flex-col items-center mb-6">
             <div className="relative w-[100px] h-[100px]">
               <button
-                onClick={() => {
-                  console.log("mic button clicked");
-
-                  if (recordingStateUI === "recording") stopRecordingManually();
-
-                  if (recordingStateUI === "speaking") stopSpeakingManually();
-                }}
+                onClick={stopRecordingManually}
                 className={`relative w-full h-full rounded-full flex items-center justify-center transition-all duration-300 ${
-                  recordingStateUI === "recording"
+                  recordingState === "recording"
                     ? "bg-[#FF5722]"
-                    : recordingStateUI === "speaking"
+                    : recordingState === "speaking"
                     ? "bg-[#00C853]"
-                    : recordingStateUI === "processing"
+                    : recordingState === "processing"
                     ? "bg-gray-400"
                     : "bg-[#1E90FF]"
                 }`}
-                aria-label={
-                  recordingStateUI === "recording"
-                    ? "Stop recording"
-                    : "Recording not active"
-                }
-                disabled={
-                  recordingStateUI !== "recording" &&
-                  recordingStateUI !== "speaking"
-                }
+                aria-label="Stop recording manually"
+                disabled={recordingState !== "recording"}
               >
                 <Mic className="w-10 h-10 text-white" />
               </button>
-              {recordingStateUI === "recording" && (
+              {recordingState === "recording" && (
                 <>
                   <span
-                    className="absolute inset-0 rounded-full bg-[#FF5722] opacity-30 animate-ping-slow pointer-events-none"
+                    className="absolute inset-0 rounded-full bg-[#FF5722] opacity-30 animate-ping-slow"
                     style={{ transform: `scale(${1 + volumeLevel * 0.5})` }}
                   ></span>
                   <span
-                    className="absolute inset-0 rounded-full bg-[#FF5722] opacity-20 animate-ping-slow animation-delay-100 pointer-events-none"
+                    className="absolute inset-0 rounded-full bg-[#FF5722] opacity-20 animate-ping-slow animation-delay-100"
                     style={{ transform: `scale(${1 + volumeLevel * 0.7})` }}
                   ></span>
                   <span
-                    className="absolute inset-0 rounded-full bg-[#FF5722] opacity-10 animate-ping-slow animation-delay-200 pointer-events-none"
+                    className="absolute inset-0 rounded-full bg-[#FF5722] opacity-10 animate-ping-slow animation-delay-200"
                     style={{ transform: `scale(${1 + volumeLevel * 1})` }}
                   ></span>
                 </>
               )}
-              {recordingStateUI === "speaking" && isSpeakingActiveUI && (
+              {recordingState === "speaking" && isSpeakingActive && (
                 <>
                   <span
-                    className="absolute inset-0 rounded-full bg-[#00C853] opacity-30 animate-ping-slow pointer-events-none"
+                    className="absolute inset-0 rounded-full bg-[#00C853] opacity-30 animate-ping-slow"
                     style={{ transform: `scale(1)` }}
                   ></span>
                   <span
-                    className="absolute inset-0 rounded-full bg-[#00C853] opacity-20 animate-ping-slow animation-delay-100 pointer-events-none"
+                    className="absolute inset-0 rounded-full bg-[#00C853] opacity-20 animate-ping-slow animation-delay-100"
                     style={{ transform: `scale(1.2)` }}
                   ></span>
                   <span
-                    className="absolute inset-0 rounded-full bg-[#00C853] opacity-10 animate-ping-slow animation-delay-200 pointer-events-none"
+                    className="absolute inset-0 rounded-full bg-[#00C853] opacity-10 animate-ping-slow animation-delay-200"
                     style={{ transform: `scale(1.4)` }}
                   ></span>
                 </>
@@ -575,9 +493,9 @@ export default function BookingModal({ onClose }: BookingModalProps) {
             </div>
             <p
               className={`mt-6 text-center ${
-                recordingStateUI === "recording"
+                recordingState === "recording"
                   ? "text-[#FF5722]"
-                  : recordingStateUI === "speaking"
+                  : recordingState === "speaking"
                   ? "text-[#00C853]"
                   : "text-[#1F2937]"
               }`}
@@ -585,19 +503,6 @@ export default function BookingModal({ onClose }: BookingModalProps) {
             >
               {message}
             </p>
-
-            {/* User guidance text */}
-            <p className="mt-2 text-center text-sm text-gray-500">
-              {recordingStateUI === "recording" &&
-                "Click mic to stop, or pause speaking for auto-stop"}
-              {recordingStateUI === "speaking" &&
-                autoInterruptEnabledUI &&
-                "Start speaking to interrupt the assistant"}
-              {recordingStateUI === "speaking" &&
-                !autoInterruptEnabledUI &&
-                "Click mic to stop the assistant and speak"}
-            </p>
-
             {Object.keys(bookingDetails).length > 0 && (
               <div className="border-t border-gray-300 pt-4 mt-4 w-full">
                 <h3 className="font-medium text-[#1F2937] mb-2">
