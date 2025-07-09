@@ -1,0 +1,18 @@
+[
+  {
+    "role": "user",
+    "parts": [
+      {
+        "text": "{\"starting_point\":null,\"destination\":null,\"date\":null,\"seat_number\":null,\"customer_name\":null,\"phone_number\":null,\"departure_time\":null,\"confirmed\":false}"
+      }
+    ]
+  },
+  {
+    "parts": [
+      {
+        "text": "```json\n{\n  \"narration\": \"Hello! I'm your bus booking assistant. To help you book a ticket, could you please tell me where you'd like to depart from and your destination? Also, what date are you planning to travel?\",\n  \"updatedBookingDetails\": {\n    \"starting_terminal\": null,\n    \"destination_terminal\": null,\n    \"trip_id\": null,\n    \"departure_date\": null,\n    \"price\": null,\n    \"passenger_name\": null,\n    \"phone_no\": null,\n    \"seat_number\": null\n  },\n  \"bookingComplete\": false,\n  \"wants_to_call_function\": false,\n  \"conversationEnded\": false,\n  \"agentThinking\": \"The user has provided null values for all the fields. I need to ask for the starting point, destination, and date of travel to proceed.\"\n}\n```"
+      }
+    ],
+    "role": "model"
+  }
+]

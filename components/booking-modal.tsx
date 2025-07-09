@@ -2,28 +2,16 @@
 
 import { useState, useRef, useEffect } from "react";
 import { X, Mic } from "lucide-react";
+import { v4 as uuidv4 } from "uuid";
 
+import { filterNonNullFields, updateObjectSkippingNulls } from "./functions";
 import {
-  callGeminiAPI,
-  filterNonNullFields,
-  updateObjectSkippingNulls,
-} from "./functions";
-import { getGeminiChatSession } from "@/actions/client_actions/initializeGemini";
+  BookingDetails,
+  sendRequestToGemini,
+} from "@/actions/sendRequestToGemini";
 
 interface BookingModalProps {
   onClose: () => void;
-}
-
-// Define the BookingDetails interface
-export interface BookingDetails {
-  starting_point: string | null;
-  destination: string | null;
-  date: string | null;
-  seat_number: string | null;
-  customer_name: string | null;
-  phone_number: string | null;
-  departure_time: string | null;
-  confirmed: boolean;
 }
 
 type RecordingState =
@@ -59,7 +47,7 @@ export default function BookingModal({ onClose }: BookingModalProps) {
   const isSpeakingActiveRef = useRef(false);
   const [isSpeakingActiveUI, setIsSpeakingActiveUI] = useState(false);
 
-  const chat = getGeminiChatSession();
+  const [chatId, updateChatId] = useState(uuidv4());
 
   const setIsSpeakingActive = (active: boolean) => {
     isSpeakingActiveRef.current = active;
@@ -156,11 +144,11 @@ export default function BookingModal({ onClose }: BookingModalProps) {
     setMessage("Preparing greeting...");
 
     try {
-      const response = await callGeminiAPI(
+      const response = await sendRequestToGemini(
         null,
         bookingDetails,
-        chat.current,
-        true
+        true,
+        chatId
       );
 
       console.log("Intro response from Gemini:", response);
@@ -238,11 +226,12 @@ export default function BookingModal({ onClose }: BookingModalProps) {
 
           try {
             const base64Audio = reader.result as string;
-            const response = await callGeminiAPI(
+
+            const response = await sendRequestToGemini(
               base64Audio,
               bookingDetails,
-              chat.current,
-              false
+              false,
+              chatId
             );
             console.log("Response from Gemini:", response);
 
@@ -259,9 +248,11 @@ export default function BookingModal({ onClose }: BookingModalProps) {
               return updatedDetails;
             });
 
-            if (response.bookingComplete) {
+            if (response.bookingSuccessful) {
               handleBookingComplete(response.updatedBookingDetails);
             }
+
+            if (response.conversationEnded) handleClose();
 
             if (response.narration) {
               setRecordingState("speaking");
@@ -322,27 +313,27 @@ export default function BookingModal({ onClose }: BookingModalProps) {
         analyserRef.current.getByteFrequencyData(dataArray);
         const average =
           dataArray.reduce((sum, val) => sum + val, 0) / bufferLength;
-        const silenceThreshold = 10;
+        // const silenceThreshold = 10;
 
-        if (average < silenceThreshold) {
-          if (!silenceTimeoutRef.current) {
-            silenceTimeoutRef.current = setTimeout(() => {
-              if (
-                mediaRecorderRef.current &&
-                mediaRecorderRef.current.state === "recording"
-              ) {
-                console.log("Silence detected, stopping recording...");
-                mediaRecorderRef.current.stop();
-                silenceTimeoutRef.current = null;
-              }
-            }, 1000); // 1-second silence threshold
-          }
-        } else {
-          if (silenceTimeoutRef.current) {
-            clearTimeout(silenceTimeoutRef.current);
-            silenceTimeoutRef.current = null;
-          }
-        }
+        // if (average < silenceThreshold) {
+        //   if (!silenceTimeoutRef.current) {
+        //     silenceTimeoutRef.current = setTimeout(() => {
+        //       if (
+        //         mediaRecorderRef.current &&
+        //         mediaRecorderRef.current.state === "recording"
+        //       ) {
+        //         console.log("Silence detected, stopping recording...");
+        //         mediaRecorderRef.current.stop();
+        //         silenceTimeoutRef.current = null;
+        //       }
+        //     }, 1000); // 1-second silence threshold
+        //   }
+        // } else {
+        //   if (silenceTimeoutRef.current) {
+        //     clearTimeout(silenceTimeoutRef.current);
+        //     silenceTimeoutRef.current = null;
+        //   }
+        // }
         requestAnimationFrame(checkSilence);
       };
       requestAnimationFrame(checkSilence);

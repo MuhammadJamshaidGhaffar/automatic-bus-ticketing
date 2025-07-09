@@ -14,7 +14,7 @@ const functionDeclarations = [
           type: "STRING",
           description: "The city and state, e.g. San Francisco, CA",
         },
-        unit: {
+        unit: {fuinc
           type: "STRING",
           enum: ["celsius", "fahrenheit"],
         },
